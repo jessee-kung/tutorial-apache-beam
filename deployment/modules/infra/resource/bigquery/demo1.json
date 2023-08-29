@@ -1,0 +1,22 @@
+[
+    {
+        "mode": "NULLABLE",
+        "name": "event_time",
+        "type": "TIMESTAMP"
+    },
+    {
+        "mode": "NULLABLE",
+        "name": "processing_time",
+        "type": "TIMESTAMP"
+    },
+    {
+        "mode": "NULLABLE",
+        "name": "user_id",
+        "type": "INTEGER"
+    },
+    {
+        "mode": "NULLABLE",
+        "name": "click",
+        "type": "INTEGER"
+    }
+]
