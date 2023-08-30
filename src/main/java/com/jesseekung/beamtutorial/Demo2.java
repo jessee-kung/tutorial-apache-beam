@@ -18,9 +18,14 @@ import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.DoFn;
-import org.apache.beam.sdk.transforms.Sum;
+import org.apache.beam.sdk.transforms.MapElements;
+import org.apache.beam.sdk.transforms.SimpleFunction;
+import org.apache.beam.sdk.transforms.Count;
+import org.apache.beam.sdk.transforms.WithTimestamps;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.KV;
+import org.apache.beam.sdk.transforms.windowing.AfterProcessingTime;
+import org.apache.beam.sdk.transforms.windowing.AfterWatermark;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Window;
 
@@ -55,23 +60,22 @@ public class Demo2 {
     void setOutputTable(ValueProvider<String> value);
   }
 
-  static class MessageTransform extends PTransform<PCollection<SequencedMessage>, PCollection<KV<Integer, Integer>>> {
+  static class MessageTransform extends PTransform<PCollection<SequencedMessage>, PCollection<KV<Integer, Instant>>> {
     @Override
-    public PCollection<KV<Integer, Integer>> expand(PCollection<SequencedMessage> input) {
+    public PCollection<KV<Integer, Instant>> expand(PCollection<SequencedMessage> input) {
       return input.apply(
           "PubsubLiteMessageToKV",
-          ParDo.of(new DoFn<SequencedMessage, KV<Integer, Integer>>() {
+          ParDo.of(new DoFn<SequencedMessage, KV<Integer, Instant>>() {
             @ProcessElement
-            public void processElement(
-                @Element SequencedMessage element,
-                OutputReceiver<KV<Integer, Integer>> outputReceiver) {
-              String json = element.getMessage().getData().toStringUtf8();
+            public void processElement(ProcessContext context) {
+              String json = context.element().getMessage().getData().toStringUtf8();
               try {
+                logger.info("received: " + json);
                 InputMessage message = MAPPER.readValue(json, InputMessage.class);
 
                 Instant ts = Instant.ofEpochSecond(message.getEventTime());
-                outputReceiver.outputWithTimestamp(
-                    KV.<Integer, Integer>of(message.getUserId(), message.getClick()), ts);
+
+                context.output(KV.<Integer, Instant>of(message.getUserId(), ts));
               } catch (Exception e) {
                 logger.error("fail to parse from json to table row:", e);
                 return;
@@ -81,25 +85,25 @@ public class Demo2 {
     }
   }
 
-  static class KVSumToTableRowTransform extends PTransform<PCollection<KV<Integer, Integer>>, PCollection<TableRow>> {
+  static class KVSumToTableRowTransform extends PTransform<PCollection<KV<Integer, Long>>, PCollection<TableRow>> {
     @Override
-    public PCollection<TableRow> expand(PCollection<KV<Integer, Integer>> input) {
+    public PCollection<TableRow> expand(PCollection<KV<Integer, Long>> input) {
       return input.apply(
-        "KVSumToTableRow",
-        ParDo.of(new DoFn<KV<Integer, Integer>, TableRow>(){
-          @ProcessElement
-          public void processElement(ProcessContext context) {
-            KV<Integer, Integer> kv = context.element();
-            
-            TableRow row = new TableRow();
-            row.put("processing_time", Instant.now().getMillis() / 1000);
-            row.put("user_id", kv.getKey());
-            row.put("count", kv.getValue());
+          "KVSumToTableRow",
+          ParDo.of(new DoFn<KV<Integer, Long>, TableRow>() {
+            @ProcessElement
+            public void processElement(ProcessContext context) {
+              KV<Integer, Long> kv = context.element();
+              logger.info("received: " + kv.getKey() + "," + kv.getValue());
 
-            context.output(row);
-          }
-        })
-      );
+              TableRow row = new TableRow();
+              row.put("processing_time", Instant.now().getMillis() / 1000);
+              row.put("user_id", kv.getKey());
+              row.put("count", kv.getValue());
+
+              context.output(row);
+            }
+          }));
     }
   }
 
@@ -115,33 +119,49 @@ public class Demo2 {
         PubsubLiteIO.read(subscriberOptions));
 
     /**
-     * Output: KV<Integer, Integer>, where
+     * Output: KV<Integer, Instant>, where
      * Integer: user_id
-     * Integer: click (always 1)
+     * Instant: timestamp
      */
-    PCollection<KV<Integer, Integer>> kvElements = messages.apply(
+    PCollection<KV<Integer, Instant>> kvElements = messages.apply(
         "ToKVElements",
         new MessageTransform());
 
     /**
-     * Output: KV<Integer, Integer>, where
+     * Output: KV<Integer, >, where
      * Integer: user_id
      * Integer: sum of click in the window size
      */
-    PCollection<KV<Integer, Integer>> windowedSum = kvElements.apply(
-        "ToPerMinuteWindow",
-        Window.<KV<Integer, Integer>>into(
-            FixedWindows.of(Duration.standardMinutes(1))
-        ).withAllowedLateness(Duration.standardMinutes(5))
-        .discardingFiredPanes())
+    PCollection<KV<Integer, Long>> windowedSum = kvElements
+        .apply(
+          "AllowTimestampSkew",
+          WithTimestamps.<KV<Integer, Instant>>of(x -> x.getValue()).withAllowedTimestampSkew(Duration.standardMinutes(1))
+        )
+        .apply(
+          "ConvertToUserIdOnly",
+          MapElements.via(new SimpleFunction<KV<Integer, Instant>, KV<Integer, Void>>() {
+            @Override
+            public KV<Integer, Void> apply(KV<Integer, Instant> input) {
+              return KV.<Integer, Void>of(input.getKey(), null);
+            }
+          })
+        )
+        .apply(
+            "ToPerMinuteWindow",
+            Window.<KV<Integer, Void>>into(
+                FixedWindows.of(Duration.standardSeconds(1)))
+                .triggering(
+                    AfterWatermark.pastEndOfWindow().withLateFirings(
+                        AfterProcessingTime.pastFirstElementInPane().plusDelayOf(Duration.standardMinutes(1))))
+                .withAllowedLateness(Duration.standardMinutes(1))
+                .discardingFiredPanes())
         .apply(
             "ToPerMinuteWindowedSum",
-            Sum.<Integer>integersPerKey());
-    
+            Count.perKey());
+
     PCollection<TableRow> tableRows = windowedSum.apply(
-      "ToTableRow",
-      new KVSumToTableRowTransform()
-    );
+        "ToTableRow",
+        new KVSumToTableRowTransform());
 
     tableRows.apply(
         "WriteBigQueryTables",

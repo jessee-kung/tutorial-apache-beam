@@ -12,6 +12,10 @@ deploy-infra:
 destroy-infra:
 	cd ${MKFILE_DIR}/deployment/environments/dev/infra; terraform init; terraform destroy
 
+.PHONY: direct-runner
+direct-runner:
+	./template_helper.sh direct-run ${TOPIC}
+
 .PHONY: build-template
 build-template:
 	./template_helper.sh build ${TOPIC}
@@ -29,6 +33,9 @@ help:
 	@echo "To create or destroy Pub/Sub Lite and BigQuery resources in Google Cloud platform, use:"
 	@echo "    make deploy-infra"
 	@echo "    make destroy-infra"
+	@echo ""
+	@echo "To run Apache Beam pipelines with direct runner, use:"
+	@echo "    make direct-runner  TOPIC=[demo1|demo2]"
 	@echo ""
 	@echo "To deploy Apache Beam pipelines with Google Dataflow Runners, use:"
 	@echo "    make build-template TOPIC=[demo1|demo2]"

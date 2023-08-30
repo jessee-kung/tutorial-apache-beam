@@ -57,12 +57,22 @@ build)
                         --templateLocation=gs://${DEPLOYMENT_BUCKET}/dataflow-etls/template/${TOPIC} \
                         --inputSubscription=${INPUT_SUBSCRIPTION} \
                         --outputTable=${OUTPUT_TABLE}"
+    exit 0
     ;;
 run)
     gcloud dataflow jobs run ${TOPIC}  \
         --gcs-location=gs://${DEPLOYMENT_BUCKET}/dataflow-etls/template/${TOPIC} \
         --region=${REGION} \
         --enable-streaming-engine
+    exit 0
+    ;;
+direct-run)
+    mvn compile exec:java -e \
+            -Pdirect-runner \
+            -Dexec.mainClass=${MAIN_CLASS} \
+            -Dexec.args="--inputSubscription=${INPUT_SUBSCRIPTION} \
+                         --outputTable=${OUTPUT_TABLE}"
+    exit 0
     ;;
 *)
     echo "unexpected operation: ${OP}"
