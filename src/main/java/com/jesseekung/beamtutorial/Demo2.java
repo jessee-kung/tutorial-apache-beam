@@ -149,7 +149,7 @@ public class Demo2 {
         .apply(
             "ToPerMinuteWindow",
             Window.<KV<Integer, Void>>into(
-                FixedWindows.of(Duration.standardSeconds(1)))
+                FixedWindows.of(Duration.standardMinutes(1)))
                 .triggering(
                     AfterWatermark.pastEndOfWindow().withLateFirings(
                         AfterProcessingTime.pastFirstElementInPane().plusDelayOf(Duration.standardMinutes(1))))
