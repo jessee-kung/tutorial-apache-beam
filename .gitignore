@@ -27,3 +27,5 @@ replay_pid*
 target
 **/.terraform
 **/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
